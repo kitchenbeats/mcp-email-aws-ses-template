@@ -1,0 +1,18 @@
+name = "mcp-email-aws-ses"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+MCP_PROTOCOL_VERSION = "2025-06-18"
+EMAIL_PROVIDER = "aws-ses"
+AWS_REGION = "us-east-1"
+
+[env.production]
+# Set via GitHub Actions or Cloudflare dashboard
+# AWS_ACCESS_KEY_ID = "your-access-key"
+# AWS_SECRET_ACCESS_KEY = "your-secret-key"
+# EMAIL_DEFAULT_FROM = "noreply@yourdomain.com"
+
+[env.development]
+# Same as production

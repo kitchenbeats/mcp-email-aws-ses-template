@@ -39,7 +39,16 @@ Check delivery status of sent emails (requires SES event publishing).
 
 ## Setup
 
-### 1. Deploy to Cloudflare Workers
+### 1. Set up GitHub Actions (Optional)
+
+To enable automatic deployment, move the deploy.yml file to .github/workflows/deploy.yml:
+
+\`\`\`bash
+mkdir -p .github/workflows
+mv deploy.yml .github/workflows/deploy.yml
+\`\`\`
+
+Or deploy manually using the Cloudflare Workers button:
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/GITHUB_USERNAME/mcp-email-aws-ses-template)
 

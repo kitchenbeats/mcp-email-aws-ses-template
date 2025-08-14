@@ -148,6 +148,72 @@ const TOOLS = [
       },
       required: ['messageId']
     }
+  },
+  {
+    name: 'get_sending_quota',
+    description: 'Get your AWS SES sending limits and usage',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'get_send_statistics',
+    description: 'Get sending statistics for the last 2 weeks',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'verify_email_identity',
+    description: 'Verify a new email address for sending',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        email: {
+          type: 'string',
+          description: 'Email address to verify'
+        }
+      },
+      required: ['email']
+    }
+  },
+  {
+    name: 'list_verified_identities',
+    description: 'List all verified email addresses and domains',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'delete_identity',
+    description: 'Remove a verified email or domain',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        identity: {
+          type: 'string',
+          description: 'Email address or domain to remove'
+        }
+      },
+      required: ['identity']
+    }
+  },
+  {
+    name: 'get_suppression_list',
+    description: 'Get emails in the suppression list (bounces, complaints)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          enum: ['BOUNCE', 'COMPLAINT'],
+          description: 'Type of suppression to retrieve'
+        }
+      }
+    }
   }
 ];
 
@@ -290,6 +356,30 @@ async function handleToolCall(request: JsonRpcRequest, env: Env): Promise<JsonRp
       
       case 'get_email_status':
         result = await getEmailStatus(params.arguments, env);
+        break;
+      
+      case 'get_sending_quota':
+        result = await getSendingQuota(env);
+        break;
+      
+      case 'get_send_statistics':
+        result = await getSendStatistics(env);
+        break;
+      
+      case 'verify_email_identity':
+        result = await verifyEmailIdentity(params.arguments, env);
+        break;
+      
+      case 'list_verified_identities':
+        result = await listVerifiedIdentities(env);
+        break;
+      
+      case 'delete_identity':
+        result = await deleteIdentity(params.arguments, env);
+        break;
+      
+      case 'get_suppression_list':
+        result = await getSuppressionList(params.arguments, env);
         break;
       
       default:
@@ -616,6 +706,341 @@ async function getEmailStatus(args: unknown, env: Env): Promise<unknown> {
     region: env.AWS_REGION,
     timestamp: new Date().toISOString(),
     note: 'Real-time status requires SNS topic configuration for delivery notifications'
+  };
+}
+
+// Get sending quota
+async function getSendingQuota(env: Env): Promise<unknown> {
+  const params = new URLSearchParams({
+    'Action': 'GetSendQuota',
+    'Version': '2010-12-01'
+  });
+  
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const body = params.toString();
+  
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`AWS SES quota error: ${error}`);
+  }
+  
+  const responseText = await response.text();
+  
+  // Parse XML response
+  const max24HourSend = responseText.match(/<Max24HourSend>(.*?)<\/Max24HourSend>/)?.[1] || '0';
+  const maxSendRate = responseText.match(/<MaxSendRate>(.*?)<\/MaxSendRate>/)?.[1] || '0';
+  const sentLast24Hours = responseText.match(/<SentLast24Hours>(.*?)<\/SentLast24Hours>/)?.[1] || '0';
+  
+  return {
+    max24HourSend: parseFloat(max24HourSend),
+    maxSendRate: parseFloat(maxSendRate),
+    sentLast24Hours: parseFloat(sentLast24Hours),
+    remainingToday: parseFloat(max24HourSend) - parseFloat(sentLast24Hours),
+    percentageUsed: (parseFloat(sentLast24Hours) / parseFloat(max24HourSend)) * 100,
+    provider: 'aws-ses',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Get send statistics
+async function getSendStatistics(env: Env): Promise<unknown> {
+  const params = new URLSearchParams({
+    'Action': 'GetSendStatistics',
+    'Version': '2010-12-01'
+  });
+  
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const body = params.toString();
+  
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`AWS SES statistics error: ${error}`);
+  }
+  
+  const responseText = await response.text();
+  
+  // Parse XML for data points
+  const dataPoints = [];
+  const dataPointMatches = responseText.matchAll(/<member>(.*?)<\/member>/gs);
+  
+  for (const match of dataPointMatches) {
+    const point = match[1];
+    const timestamp = point.match(/<Timestamp>(.*?)<\/Timestamp>/)?.[1];
+    const deliveryAttempts = point.match(/<DeliveryAttempts>(.*?)<\/DeliveryAttempts>/)?.[1] || '0';
+    const bounces = point.match(/<Bounces>(.*?)<\/Bounces>/)?.[1] || '0';
+    const complaints = point.match(/<Complaints>(.*?)<\/Complaints>/)?.[1] || '0';
+    const rejects = point.match(/<Rejects>(.*?)<\/Rejects>/)?.[1] || '0';
+    
+    if (timestamp) {
+      dataPoints.push({
+        timestamp,
+        deliveryAttempts: parseInt(deliveryAttempts),
+        bounces: parseInt(bounces),
+        complaints: parseInt(complaints),
+        rejects: parseInt(rejects)
+      });
+    }
+  }
+  
+  return {
+    dataPoints: dataPoints.slice(-14), // Last 14 days
+    provider: 'aws-ses',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Verify email identity
+async function verifyEmailIdentity(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    email: z.string().email()
+  }).parse(args);
+  
+  const params = new URLSearchParams({
+    'Action': 'VerifyEmailIdentity',
+    'EmailAddress': validated.email,
+    'Version': '2010-12-01'
+  });
+  
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const body = params.toString();
+  
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`AWS SES verify error: ${error}`);
+  }
+  
+  return {
+    success: true,
+    email: validated.email,
+    status: 'verification_sent',
+    message: `Verification email sent to ${validated.email}. Please check inbox and click the verification link.`,
+    provider: 'aws-ses',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// List verified identities
+async function listVerifiedIdentities(env: Env): Promise<unknown> {
+  const params = new URLSearchParams({
+    'Action': 'ListIdentities',
+    'IdentityType': 'EmailAddress',
+    'MaxItems': '100',
+    'Version': '2010-12-01'
+  });
+  
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const body = params.toString();
+  
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`AWS SES list identities error: ${error}`);
+  }
+  
+  const responseText = await response.text();
+  
+  // Parse email addresses from XML
+  const emails = [];
+  const emailMatches = responseText.matchAll(/<member>(.*?)<\/member>/g);
+  
+  for (const match of emailMatches) {
+    emails.push(match[1]);
+  }
+  
+  // Get domains too
+  const domainParams = new URLSearchParams({
+    'Action': 'ListIdentities',
+    'IdentityType': 'Domain',
+    'MaxItems': '100',
+    'Version': '2010-12-01'
+  });
+  
+  const domainResponse = await fetch(url, {
+    method: 'POST',
+    headers: await signAwsRequest('POST', url, headers, domainParams.toString(), env),
+    body: domainParams.toString()
+  });
+  
+  const domains = [];
+  if (domainResponse.ok) {
+    const domainText = await domainResponse.text();
+    const domainMatches = domainText.matchAll(/<member>(.*?)<\/member>/g);
+    for (const match of domainMatches) {
+      domains.push(match[1]);
+    }
+  }
+  
+  return {
+    emails,
+    domains,
+    totalCount: emails.length + domains.length,
+    provider: 'aws-ses',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Delete identity
+async function deleteIdentity(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    identity: z.string()
+  }).parse(args);
+  
+  const params = new URLSearchParams({
+    'Action': 'DeleteIdentity',
+    'Identity': validated.identity,
+    'Version': '2010-12-01'
+  });
+  
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const body = params.toString();
+  
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`AWS SES delete identity error: ${error}`);
+  }
+  
+  return {
+    success: true,
+    identity: validated.identity,
+    message: `Successfully removed ${validated.identity} from verified identities`,
+    provider: 'aws-ses',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Get suppression list
+async function getSuppressionList(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    reason: z.enum(['BOUNCE', 'COMPLAINT']).optional()
+  }).parse(args || {});
+  
+  const params = new URLSearchParams({
+    'Action': 'ListSuppressedDestinations',
+    'Version': '2010-12-01'
+  });
+  
+  if (validated.reason) {
+    params.append('Reasons.member.1', validated.reason);
+  }
+  
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const body = params.toString();
+  
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    // If the API doesn't support this operation, return empty list
+    if (error.includes('InvalidAction')) {
+      return {
+        suppressedEmails: [],
+        reason: validated.reason,
+        note: 'This operation requires SES v2 API. Suppression list management may require AWS Console access.',
+        provider: 'aws-ses',
+        region: env.AWS_REGION,
+        timestamp: new Date().toISOString()
+      };
+    }
+    throw new Error(`AWS SES suppression list error: ${error}`);
+  }
+  
+  const responseText = await response.text();
+  
+  // Parse suppressed emails from XML
+  const suppressedEmails = [];
+  const emailMatches = responseText.matchAll(/<EmailAddress>(.*?)<\/EmailAddress>/g);
+  
+  for (const match of emailMatches) {
+    suppressedEmails.push(match[1]);
+  }
+  
+  return {
+    suppressedEmails,
+    reason: validated.reason || 'ALL',
+    count: suppressedEmails.length,
+    provider: 'aws-ses',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
   };
 }
 

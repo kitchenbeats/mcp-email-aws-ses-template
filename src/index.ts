@@ -355,7 +355,7 @@ async function signAwsRequest(
   
   const canonicalRequest = [
     method,
-    new URL(url).pathname,
+    new URL(url).pathname || '/',
     new URL(url).search.substring(1),
     canonicalHeaders,
     '',
@@ -453,11 +453,11 @@ async function sendEmail(args: unknown, env: Env): Promise<unknown> {
     params.append('ReplyToAddresses.member.1', validated.replyTo);
   }
   
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com`;
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
   const body = params.toString();
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
     'Host': `ses.${env.AWS_REGION}.amazonaws.com`
   };
   
@@ -513,11 +513,11 @@ async function sendBulkEmail(args: unknown, env: Env): Promise<unknown> {
       
       params.append('Destination.ToAddresses.member.1', recipient.email);
       
-      const url = `https://ses.${env.AWS_REGION}.amazonaws.com`;
+      const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
       const body = params.toString();
       
       const headers = {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
         'Host': `ses.${env.AWS_REGION}.amazonaws.com`
       };
       
@@ -572,11 +572,11 @@ async function getTemplates(env: Env): Promise<unknown> {
     'Version': '2010-12-01'
   });
   
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com`;
+  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
   const body = params.toString();
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
     'Host': `ses.${env.AWS_REGION}.amazonaws.com`
   };
   

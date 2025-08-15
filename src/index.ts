@@ -520,35 +520,45 @@ async function hmacSha256Raw(key: ArrayBuffer, data: string): Promise<ArrayBuffe
   return await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
 }
 
-// Send single email via AWS SES
+// Send single email via AWS SES V2 API
 async function sendEmail(args: unknown, env: Env): Promise<unknown> {
   const validated = sendEmailSchema.parse(args);
   const fromEmail = validated.from || env.EMAIL_DEFAULT_FROM || 'noreply@example.com';
   
-  const params = new URLSearchParams({
-    'Action': 'SendEmail',
-    'Source': fromEmail,
-    'Message.Subject.Data': validated.subject,
-    'Message.Body.Html.Data': validated.isHtml ? validated.body : '',
-    'Message.Body.Text.Data': validated.isHtml ? '' : validated.body,
-    'Version': '2010-12-01'
+  // V2 API endpoint
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`;
+  
+  // V2 API uses JSON instead of URL-encoded
+  const body = JSON.stringify({
+    FromEmailAddress: fromEmail,
+    Destination: {
+      ToAddresses: validated.to
+    },
+    Content: {
+      Simple: {
+        Subject: {
+          Data: validated.subject,
+          Charset: 'UTF-8'
+        },
+        Body: validated.isHtml ? {
+          Html: {
+            Data: validated.body,
+            Charset: 'UTF-8'
+          }
+        } : {
+          Text: {
+            Data: validated.body,
+            Charset: 'UTF-8'
+          }
+        }
+      }
+    },
+    ...(validated.replyTo && { ReplyToAddresses: [validated.replyTo] })
   });
-  
-  // Add destinations
-  validated.to.forEach((email, index) => {
-    params.append(`Destination.ToAddresses.member.${index + 1}`, email);
-  });
-  
-  if (validated.replyTo) {
-    params.append('ReplyToAddresses.member.1', validated.replyTo);
-  }
-  
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
-  const body = params.toString();
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
   const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
@@ -561,19 +571,18 @@ async function sendEmail(args: unknown, env: Env): Promise<unknown> {
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`AWS SES API error: ${error}`);
+    throw new Error(`AWS SES V2 API error (${response.status}): ${error}`);
   }
   
-  const responseText = await response.text();
-  const messageIdMatch = responseText.match(/<MessageId>(.*?)<\/MessageId>/);
-  const messageId = messageIdMatch ? messageIdMatch[1] : `ses_${Date.now()}`;
+  // V2 API returns JSON
+  const result = await response.json();
   
   return {
     success: true,
-    messageId,
+    messageId: result.MessageId || `ses_${Date.now()}`,
     to: validated.to,
     subject: validated.subject,
-    provider: 'aws-ses',
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()
   };
@@ -709,111 +718,79 @@ async function getEmailStatus(args: unknown, env: Env): Promise<unknown> {
   };
 }
 
-// Get sending quota
+// Get sending quota using V2 API
 async function getSendingQuota(env: Env): Promise<unknown> {
-  const params = new URLSearchParams({
-    'Action': 'GetSendQuota',
-    'Version': '2010-12-01'
-  });
-  
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
-  const body = params.toString();
+  // V2 API endpoint for account details
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
-  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  const signedHeaders = await signAwsRequest('GET', url, headers, '', env);
   
   const response = await fetch(url, {
-    method: 'POST',
-    headers: signedHeaders,
-    body
+    method: 'GET',
+    headers: signedHeaders
   });
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`AWS SES quota error: ${error}`);
+    throw new Error(`AWS SES V2 quota error (${response.status}): ${error}`);
   }
   
-  const responseText = await response.text();
-  
-  // Parse XML response
-  const max24HourSend = responseText.match(/<Max24HourSend>(.*?)<\/Max24HourSend>/)?.[1] || '0';
-  const maxSendRate = responseText.match(/<MaxSendRate>(.*?)<\/MaxSendRate>/)?.[1] || '0';
-  const sentLast24Hours = responseText.match(/<SentLast24Hours>(.*?)<\/SentLast24Hours>/)?.[1] || '0';
+  // V2 API returns JSON
+  const result = await response.json();
   
   return {
-    max24HourSend: parseFloat(max24HourSend),
-    maxSendRate: parseFloat(maxSendRate),
-    sentLast24Hours: parseFloat(sentLast24Hours),
-    remainingToday: parseFloat(max24HourSend) - parseFloat(sentLast24Hours),
-    percentageUsed: (parseFloat(sentLast24Hours) / parseFloat(max24HourSend)) * 100,
-    provider: 'aws-ses',
+    max24HourSend: result.SendQuota?.Max24HourSend || 0,
+    maxSendRate: result.SendQuota?.MaxSendRate || 0,
+    sentLast24Hours: result.SendQuota?.SentLast24Hours || 0,
+    remainingToday: (result.SendQuota?.Max24HourSend || 0) - (result.SendQuota?.SentLast24Hours || 0),
+    percentageUsed: result.SendQuota?.Max24HourSend ? 
+      ((result.SendQuota?.SentLast24Hours || 0) / result.SendQuota.Max24HourSend) * 100 : 0,
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()
   };
 }
 
-// Get send statistics
+// Get send statistics using V2 API
 async function getSendStatistics(env: Env): Promise<unknown> {
-  const params = new URLSearchParams({
-    'Action': 'GetSendStatistics',
-    'Version': '2010-12-01'
-  });
-  
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
-  const body = params.toString();
+  // V2 API doesn't have a direct equivalent - return account metrics instead
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
-  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  const signedHeaders = await signAwsRequest('GET', url, headers, '', env);
   
   const response = await fetch(url, {
-    method: 'POST',
-    headers: signedHeaders,
-    body
+    method: 'GET',
+    headers: signedHeaders
   });
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`AWS SES statistics error: ${error}`);
+    throw new Error(`AWS SES V2 statistics error (${response.status}): ${error}`);
   }
   
-  const responseText = await response.text();
+  // V2 API returns JSON with different structure
+  const result = await response.json();
   
-  // Parse XML for data points
-  const dataPoints = [];
-  const dataPointMatches = responseText.matchAll(/<member>(.*?)<\/member>/gs);
-  
-  for (const match of dataPointMatches) {
-    const point = match[1];
-    const timestamp = point.match(/<Timestamp>(.*?)<\/Timestamp>/)?.[1];
-    const deliveryAttempts = point.match(/<DeliveryAttempts>(.*?)<\/DeliveryAttempts>/)?.[1] || '0';
-    const bounces = point.match(/<Bounces>(.*?)<\/Bounces>/)?.[1] || '0';
-    const complaints = point.match(/<Complaints>(.*?)<\/Complaints>/)?.[1] || '0';
-    const rejects = point.match(/<Rejects>(.*?)<\/Rejects>/)?.[1] || '0';
-    
-    if (timestamp) {
-      dataPoints.push({
-        timestamp,
-        deliveryAttempts: parseInt(deliveryAttempts),
-        bounces: parseInt(bounces),
-        complaints: parseInt(complaints),
-        rejects: parseInt(rejects)
-      });
-    }
-  }
-  
+  // Return simplified statistics from account data
   return {
-    dataPoints: dataPoints.slice(-14), // Last 14 days
-    provider: 'aws-ses',
+    dataPoints: [], // V2 API doesn't provide historical data in the same way
+    sendingEnabled: result.ProductionAccessEnabled || false,
+    sendQuota: result.SendQuota || {},
+    suppressionAttributes: result.SuppressionAttributes || {},
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    note: 'V2 API provides account-level metrics. For detailed statistics, use CloudWatch.'
   };
 }
 

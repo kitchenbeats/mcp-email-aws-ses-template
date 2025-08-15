@@ -339,7 +339,55 @@ const tools = {
   }
 };
 
-// Main Cloudflare Worker handler
+// MCP Protocol implementation
+const MCP_TOOLS = [
+  {
+    name: 'send_email',
+    description: 'Send an email to one or more recipients via AWS SES',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: 'array', items: { type: 'string' }, description: 'Recipient email addresses' },
+        subject: { type: 'string', description: 'Email subject line' },
+        body: { type: 'string', description: 'Email body content' },
+        from_email: { type: 'string', description: 'Sender email address' },
+        is_html: { type: 'boolean', description: 'Whether body contains HTML', default: true }
+      },
+      required: ['to', 'subject', 'body']
+    }
+  },
+  {
+    name: 'get_templates',
+    description: 'List all available AWS SES email templates',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'create_template',
+    description: 'Create a new AWS SES email template',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        template_name: { type: 'string', description: 'Unique name for the template' },
+        subject: { type: 'string', description: 'Subject line template' },
+        html_body: { type: 'string', description: 'HTML version of the email body' },
+        text_body: { type: 'string', description: 'Text version of the email body' }
+      },
+      required: ['template_name', 'subject']
+    }
+  },
+  {
+    name: 'get_sending_quota',
+    description: 'Get your AWS SES sending limits and usage',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'health_check',
+    description: 'Check server health and AWS SES connectivity',
+    inputSchema: { type: 'object', properties: {} }
+  }
+];
+
+// Main Cloudflare Worker handler - PROPER MCP PROTOCOL
 export default {
   async fetch(request, env, ctx) {
     // Handle CORS preflight
@@ -347,83 +395,114 @@ export default {
       return new Response(null, {
         headers: {
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400'
         }
       });
     }
 
+    // Health check endpoint (non-MCP)
+    if (request.method === 'GET' && new URL(request.url).pathname === '/health') {
+      const result = await tools.health_check({}, env);
+      return jsonResponse(result);
+    }
+
+    // MCP requires POST with JSON-RPC 2.0
+    if (request.method !== 'POST') {
+      return mcpErrorResponse(null, -32600, 'MCP requires POST method with JSON-RPC 2.0');
+    }
+
     try {
-      const url = new URL(request.url);
-      const path = url.pathname;
+      const body = await request.text();
+      const rpcRequest = JSON.parse(body);
 
-      // Health check
-      if (path === '/health') {
-        const result = await tools.health_check({}, env);
-        return jsonResponse(result);
+      // Validate JSON-RPC 2.0 format
+      if (rpcRequest.jsonrpc !== '2.0') {
+        return mcpErrorResponse(rpcRequest.id, -32600, 'Must be JSON-RPC 2.0');
       }
 
-      // FastMCP tool endpoints
-      if (path.startsWith('/tools/')) {
-        const toolName = path.substring(7); // Remove '/tools/'
-        
-        if (!tools[toolName]) {
-          return jsonResponse({ error: `Tool not found: ${toolName}` }, 404);
-        }
+      // Handle MCP methods
+      switch (rpcRequest.method) {
+        case 'initialize':
+          return mcpResponse(rpcRequest.id, {
+            protocolVersion: '2024-11-05',
+            capabilities: {
+              tools: {}
+            },
+            serverInfo: {
+              name: 'AWS SES Email Server',
+              version: '1.0.0'
+            }
+          });
 
-        // Authentication check
-        if (env.API_KEY) {
-          const providedKey = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                             request.headers.get('X-API-Key') ||
-                             url.searchParams.get('api_key');
+        case 'tools/list':
+          return mcpResponse(rpcRequest.id, { tools: MCP_TOOLS });
 
-          if (!providedKey || providedKey !== env.API_KEY) {
-            return jsonResponse({ error: 'Unauthorized', message: 'Valid API key required' }, 401);
+        case 'tools/call':
+          const params = rpcRequest.params;
+          if (!params?.name) {
+            return mcpErrorResponse(rpcRequest.id, -32602, 'Invalid params - tool name required');
           }
-        }
 
-        // Parse request body for POST/PUT
-        let params = {};
-        if (request.method === 'POST' || request.method === 'PUT') {
-          const contentType = request.headers.get('content-type');
-          if (contentType && contentType.includes('application/json')) {
-            params = await request.json();
+          if (!tools[params.name]) {
+            return mcpErrorResponse(rpcRequest.id, -32601, `Tool not found: ${params.name}`);
           }
-        }
 
-        // Execute tool
-        const result = await tools[toolName](params, env);
-        return jsonResponse(result);
+          try {
+            const result = await tools[params.name](params.arguments || {}, env);
+            return mcpResponse(rpcRequest.id, {
+              content: [{
+                type: 'text',
+                text: typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+              }]
+            });
+          } catch (error) {
+            return mcpErrorResponse(rpcRequest.id, -32603, `Tool execution failed: ${error.message}`);
+          }
+
+        default:
+          return mcpErrorResponse(rpcRequest.id, -32601, `Method not found: ${rpcRequest.method}`);
       }
-
-      // List available tools
-      if (path === '/tools') {
-        const toolList = Object.keys(tools).map(name => ({
-          name,
-          description: getToolDescription(name),
-          methods: getToolMethods(name)
-        }));
-
-        return jsonResponse({
-          tools: toolList,
-          count: toolList.length,
-          server: 'FastMCP AWS SES (Cloudflare Worker)',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      return jsonResponse({ error: 'Not Found', message: 'Invalid endpoint' }, 404);
 
     } catch (error) {
-      console.error('Worker error:', error);
-      return jsonResponse({
-        error: 'Internal Server Error',
-        message: error.message
-      }, 500);
+      console.error('MCP protocol error:', error);
+      return mcpErrorResponse(null, -32700, 'Parse error');
     }
   }
 };
+
+// MCP Protocol Response Helpers
+function mcpResponse(id, result) {
+  return new Response(JSON.stringify({
+    jsonrpc: '2.0',
+    result,
+    id
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+    }
+  });
+}
+
+function mcpErrorResponse(id, code, message) {
+  return new Response(JSON.stringify({
+    jsonrpc: '2.0',
+    error: { code, message },
+    id
+  }), {
+    status: 200, // MCP errors are still HTTP 200
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+    }
+  });
+}
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -431,8 +510,8 @@ function jsonResponse(data, status = 200) {
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key'
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
     }
   });
 }
@@ -460,30 +539,54 @@ function getToolMethods(toolName) {
 }
 
 /**
- * Example Usage:
+ * MCP Protocol Usage Examples:
  * 
  * Deploy this worker to Cloudflare:
  * 1. wrangler deploy
  * 2. wrangler secret put AWS_ACCESS_KEY_ID
  * 3. wrangler secret put AWS_SECRET_ACCESS_KEY
  * 4. wrangler secret put EMAIL_DEFAULT_FROM
- * 5. wrangler secret put API_KEY (optional)
  * 
- * Then call your endpoints:
+ * Then use MCP protocol (AI clients will connect automatically):
  * 
- * Health check:
- * GET https://your-worker.your-subdomain.workers.dev/health
- * 
- * Send email:
- * POST https://your-worker.your-subdomain.workers.dev/tools/send_email
- * Headers: Content-Type: application/json, X-API-Key: your-api-key
+ * 1. Initialize:
+ * POST https://your-worker.your-subdomain.workers.dev/
  * Body: {
- *   "to": ["user@example.com"],
- *   "subject": "Hello from Cloudflare!",
- *   "body": "<h1>This email was sent from a Cloudflare Worker!</h1>",
- *   "is_html": true
+ *   "jsonrpc": "2.0",
+ *   "method": "initialize",
+ *   "params": {
+ *     "protocolVersion": "2024-11-05",
+ *     "capabilities": {},
+ *     "clientInfo": {"name": "test-client", "version": "1.0.0"}
+ *   },
+ *   "id": 1
  * }
  * 
- * List tools:
- * GET https://your-worker.your-subdomain.workers.dev/tools
+ * 2. List tools:
+ * POST https://your-worker.your-subdomain.workers.dev/
+ * Body: {
+ *   "jsonrpc": "2.0",
+ *   "method": "tools/list",
+ *   "id": 2
+ * }
+ * 
+ * 3. Send email:
+ * POST https://your-worker.your-subdomain.workers.dev/
+ * Body: {
+ *   "jsonrpc": "2.0",
+ *   "method": "tools/call",
+ *   "params": {
+ *     "name": "send_email",
+ *     "arguments": {
+ *       "to": ["user@example.com"],
+ *       "subject": "Hello from MCP!",
+ *       "body": "<h1>This email was sent via MCP protocol!</h1>",
+ *       "is_html": true
+ *     }
+ *   },
+ *   "id": 3
+ * }
+ * 
+ * Health check (non-MCP):
+ * GET https://your-worker.your-subdomain.workers.dev/health
  */

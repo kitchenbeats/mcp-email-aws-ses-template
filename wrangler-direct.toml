@@ -1,0 +1,32 @@
+name = "aws-ses-fastmcp-direct"
+main = "cloudflare-direct.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# No external dependencies - everything runs in the worker!
+
+[env.production]
+vars = { 
+  AWS_REGION = "us-east-1"
+}
+
+# Set these secrets via CLI:
+# wrangler secret put AWS_ACCESS_KEY_ID --env production
+# wrangler secret put AWS_SECRET_ACCESS_KEY --env production
+# wrangler secret put EMAIL_DEFAULT_FROM --env production
+# wrangler secret put API_KEY --env production
+
+# Quick deployment:
+# wrangler deploy --env production
+# wrangler secret put AWS_ACCESS_KEY_ID --env production
+# wrangler secret put AWS_SECRET_ACCESS_KEY --env production  
+# wrangler secret put EMAIL_DEFAULT_FROM --env production
+# wrangler secret put API_KEY --env production
+
+[build]
+command = ""
+
+# Optional: Custom domain
+# [[env.production.routes]]
+# pattern = "email-api.yourdomain.com/*"
+# zone_name = "yourdomain.com"

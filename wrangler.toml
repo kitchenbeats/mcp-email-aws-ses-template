@@ -1,18 +1,25 @@
-name = "mcp-email-aws-ses"
-main = "src/index.ts"
-compatibility_date = "2024-11-01"
+name = "aws-ses-fastmcp-proxy"
+main = "cloudflare-proxy.js"
+compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
-[vars]
-MCP_PROTOCOL_VERSION = "2025-06-18"
-EMAIL_PROVIDER = "aws-ses"
-AWS_REGION = "us-east-1"
-
+# Environment variables for production
 [env.production]
-# Set via GitHub Actions or Cloudflare dashboard
-# AWS_ACCESS_KEY_ID = "your-access-key"
-# AWS_SECRET_ACCESS_KEY = "your-secret-key"
-# EMAIL_DEFAULT_FROM = "noreply@yourdomain.com"
+vars = { }
 
-[env.development]
-# Same as production
+# Secrets to set via CLI:
+# wrangler secret put FASTMCP_SERVER_URL --env production
+# wrangler secret put API_KEY --env production
+
+# Example deployment commands:
+# wrangler deploy --env production
+# wrangler secret put FASTMCP_SERVER_URL --env production
+# wrangler secret put API_KEY --env production
+
+[build]
+command = ""
+
+# Custom domains (optional)
+# [[env.production.routes]]
+# pattern = "api.yourdomain.com/*"
+# zone_name = "yourdomain.com"

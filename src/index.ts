@@ -588,35 +588,37 @@ async function sendEmail(args: unknown, env: Env): Promise<unknown> {
   };
 }
 
-// Send bulk email using AWS SES templates
+// Send bulk email using AWS SES V2 templates
 async function sendBulkEmail(args: unknown, env: Env): Promise<unknown> {
   const validated = sendBulkEmailSchema.parse(args);
   const fromEmail = env.EMAIL_DEFAULT_FROM || 'noreply@example.com';
   
   const results = [];
   
-  // AWS SES doesn't have native bulk send with templates like SendGrid
-  // We'll send individual templated emails
+  // V2 API - send bulk templated emails
   for (const recipient of validated.recipients) {
     try {
-      const params = new URLSearchParams({
-        'Action': 'SendTemplatedEmail',
-        'Source': fromEmail,
-        'Template': validated.templateName,
-        'TemplateData': JSON.stringify({
-          ...validated.globalData,
-          ...recipient.data
-        }),
-        'Version': '2010-12-01'
+      const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`;
+      
+      // V2 API uses JSON
+      const body = JSON.stringify({
+        FromEmailAddress: fromEmail,
+        Destination: {
+          ToAddresses: [recipient.email]
+        },
+        Content: {
+          Template: {
+            TemplateName: validated.templateName,
+            TemplateData: JSON.stringify({
+              ...validated.globalData,
+              ...recipient.data
+            })
+          }
+        }
       });
       
-      params.append('Destination.ToAddresses.member.1', recipient.email);
-      
-      const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`;
-      const body = params.toString();
-      
       const headers = {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+        'Content-Type': 'application/json',
         'Host': `email.${env.AWS_REGION}.amazonaws.com`
       };
       
@@ -629,12 +631,11 @@ async function sendBulkEmail(args: unknown, env: Env): Promise<unknown> {
       });
       
       if (response.ok) {
-        const responseText = await response.text();
-        const messageIdMatch = responseText.match(/<MessageId>(.*?)<\/MessageId>/);
+        const result = await response.json();
         results.push({
           email: recipient.email,
           success: true,
-          messageId: messageIdMatch ? messageIdMatch[1] : `ses_${Date.now()}`
+          messageId: result.MessageId || `ses_${Date.now()}`
         });
       } else {
         results.push({
@@ -657,49 +658,50 @@ async function sendBulkEmail(args: unknown, env: Env): Promise<unknown> {
     results,
     templateName: validated.templateName,
     totalRecipients: validated.recipients.length,
-    provider: 'aws-ses',
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()
   };
 }
 
-// Get available templates
+// Get available templates using V2 API
 async function getTemplates(env: Env): Promise<unknown> {
-  const params = new URLSearchParams({
-    'Action': 'ListTemplates',
-    'MaxItems': '50',
-    'Version': '2010-12-01'
-  });
-  
-  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
-  const body = params.toString();
+  // V2 API endpoint for listing email templates
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/templates`;
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Content-Type': 'application/json',
     'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
-  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  const signedHeaders = await signAwsRequest('GET', url, headers, '', env);
   
   const response = await fetch(url, {
-    method: 'POST',
-    headers: signedHeaders,
-    body
+    method: 'GET',
+    headers: signedHeaders
   });
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`AWS SES templates error: ${error}`);
+    throw new Error(`AWS SES V2 templates error (${response.status}): ${error}`);
   }
   
-  const responseText = await response.text();
-  const templateMatches = responseText.matchAll(/<Name>(.*?)<\/Name>/g);
-  const templates = Array.from(templateMatches).map(match => ({
-    name: match[1],
-    provider: 'aws-ses'
+  // V2 API returns JSON
+  const result = await response.json();
+  
+  const templates = (result.TemplatesMetadata || []).map((template: any) => ({
+    name: template.TemplateName,
+    createdAt: template.CreatedTimestamp,
+    provider: 'aws-ses-v2'
   }));
   
-  return { templates };
+  return { 
+    templates,
+    count: templates.length,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
 }
 
 // Get email delivery status
@@ -794,23 +796,22 @@ async function getSendStatistics(env: Env): Promise<unknown> {
   };
 }
 
-// Verify email identity
+// Verify email identity using V2 API
 async function verifyEmailIdentity(args: unknown, env: Env): Promise<unknown> {
   const validated = z.object({
     email: z.string().email()
   }).parse(args);
   
-  const params = new URLSearchParams({
-    'Action': 'VerifyEmailIdentity',
-    'EmailAddress': validated.email,
-    'Version': '2010-12-01'
+  // V2 API endpoint for creating email identity
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/identities`;
+  
+  // V2 API uses JSON
+  const body = JSON.stringify({
+    EmailIdentity: validated.email
   });
   
-  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
-  const body = params.toString();
-  
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Content-Type': 'application/json',
     'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
@@ -824,80 +825,73 @@ async function verifyEmailIdentity(args: unknown, env: Env): Promise<unknown> {
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`AWS SES verify error: ${error}`);
+    // If identity already exists, that's okay
+    if (response.status === 409) {
+      return {
+        success: true,
+        email: validated.email,
+        status: 'already_verified',
+        message: `Email ${validated.email} is already in the verification process or verified.`,
+        provider: 'aws-ses-v2',
+        region: env.AWS_REGION,
+        timestamp: new Date().toISOString()
+      };
+    }
+    throw new Error(`AWS SES V2 verify error (${response.status}): ${error}`);
   }
+  
+  // V2 API returns JSON
+  const result = await response.json();
   
   return {
     success: true,
     email: validated.email,
-    status: 'verification_sent',
+    status: result.VerifiedForSendingStatus ? 'verified' : 'verification_sent',
+    identityType: result.IdentityType || 'EMAIL_ADDRESS',
     message: `Verification email sent to ${validated.email}. Please check inbox and click the verification link.`,
-    provider: 'aws-ses',
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()
   };
 }
 
-// List verified identities
+// List verified identities using V2 API
 async function listVerifiedIdentities(env: Env): Promise<unknown> {
-  const params = new URLSearchParams({
-    'Action': 'ListIdentities',
-    'IdentityType': 'EmailAddress',
-    'MaxItems': '100',
-    'Version': '2010-12-01'
-  });
-  
-  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
-  const body = params.toString();
+  // V2 API endpoint for listing email identities
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/identities`;
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Content-Type': 'application/json',
     'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
-  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  const signedHeaders = await signAwsRequest('GET', url, headers, '', env);
   
   const response = await fetch(url, {
-    method: 'POST',
-    headers: signedHeaders,
-    body
+    method: 'GET',
+    headers: signedHeaders
   });
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`AWS SES list identities error: ${error}`);
+    throw new Error(`AWS SES V2 list identities error (${response.status}): ${error}`);
   }
   
-  const responseText = await response.text();
+  // V2 API returns JSON
+  const result = await response.json();
   
-  // Parse email addresses from XML
-  const emails = [];
-  const emailMatches = responseText.matchAll(/<member>(.*?)<\/member>/g);
+  // Separate emails and domains
+  const emails: string[] = [];
+  const domains: string[] = [];
   
-  for (const match of emailMatches) {
-    emails.push(match[1]);
-  }
-  
-  // Get domains too
-  const domainParams = new URLSearchParams({
-    'Action': 'ListIdentities',
-    'IdentityType': 'Domain',
-    'MaxItems': '100',
-    'Version': '2010-12-01'
-  });
-  
-  const domainResponse = await fetch(url, {
-    method: 'POST',
-    headers: await signAwsRequest('POST', url, headers, domainParams.toString(), env),
-    body: domainParams.toString()
-  });
-  
-  const domains = [];
-  if (domainResponse.ok) {
-    const domainText = await domainResponse.text();
-    const domainMatches = domainText.matchAll(/<member>(.*?)<\/member>/g);
-    for (const match of domainMatches) {
-      domains.push(match[1]);
+  if (result.EmailIdentities) {
+    for (const identity of result.EmailIdentities) {
+      const identityName = identity.IdentityName || '';
+      if (identityName.includes('@')) {
+        emails.push(identityName);
+      } else if (identityName) {
+        domains.push(identityName);
+      }
     }
   }
   
@@ -905,117 +899,108 @@ async function listVerifiedIdentities(env: Env): Promise<unknown> {
     emails,
     domains,
     totalCount: emails.length + domains.length,
-    provider: 'aws-ses',
+    identities: result.EmailIdentities || [],
+    nextToken: result.NextToken,
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()
   };
 }
 
-// Delete identity
+// Delete identity using V2 API
 async function deleteIdentity(args: unknown, env: Env): Promise<unknown> {
   const validated = z.object({
     identity: z.string()
   }).parse(args);
   
-  const params = new URLSearchParams({
-    'Action': 'DeleteIdentity',
-    'Identity': validated.identity,
-    'Version': '2010-12-01'
-  });
-  
-  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
-  const body = params.toString();
+  // V2 API endpoint for deleting email identity
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/identities/${encodeURIComponent(validated.identity)}`;
   
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Content-Type': 'application/json',
     'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
-  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  const signedHeaders = await signAwsRequest('DELETE', url, headers, '', env);
   
   const response = await fetch(url, {
-    method: 'POST',
-    headers: signedHeaders,
-    body
+    method: 'DELETE',
+    headers: signedHeaders
   });
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`AWS SES delete identity error: ${error}`);
+    // 404 means identity doesn't exist, which is fine
+    if (response.status === 404) {
+      return {
+        success: true,
+        identity: validated.identity,
+        message: `Identity ${validated.identity} not found or already deleted`,
+        provider: 'aws-ses-v2',
+        region: env.AWS_REGION,
+        timestamp: new Date().toISOString()
+      };
+    }
+    throw new Error(`AWS SES V2 delete identity error (${response.status}): ${error}`);
   }
   
   return {
     success: true,
     identity: validated.identity,
     message: `Successfully removed ${validated.identity} from verified identities`,
-    provider: 'aws-ses',
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()
   };
 }
 
-// Get suppression list
+// Get suppression list using V2 API
 async function getSuppressionList(args: unknown, env: Env): Promise<unknown> {
   const validated = z.object({
     reason: z.enum(['BOUNCE', 'COMPLAINT']).optional()
   }).parse(args || {});
   
-  const params = new URLSearchParams({
-    'Action': 'ListSuppressedDestinations',
-    'Version': '2010-12-01'
-  });
+  // V2 API endpoint for suppression list
+  let url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/suppression/addresses`;
   
+  // Add query parameters if reason specified
   if (validated.reason) {
-    params.append('Reasons.member.1', validated.reason);
+    url += `?Reason=${validated.reason}`;
   }
   
-  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
-  const body = params.toString();
-  
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    'Content-Type': 'application/json',
     'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
-  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  const signedHeaders = await signAwsRequest('GET', url, headers, '', env);
   
   const response = await fetch(url, {
-    method: 'POST',
-    headers: signedHeaders,
-    body
+    method: 'GET',
+    headers: signedHeaders
   });
   
   if (!response.ok) {
     const error = await response.text();
-    // If the API doesn't support this operation, return empty list
-    if (error.includes('InvalidAction')) {
-      return {
-        suppressedEmails: [],
-        reason: validated.reason,
-        note: 'This operation requires SES v2 API. Suppression list management may require AWS Console access.',
-        provider: 'aws-ses',
-        region: env.AWS_REGION,
-        timestamp: new Date().toISOString()
-      };
-    }
-    throw new Error(`AWS SES suppression list error: ${error}`);
+    throw new Error(`AWS SES V2 suppression list error (${response.status}): ${error}`);
   }
   
-  const responseText = await response.text();
+  // V2 API returns JSON
+  const result = await response.json();
   
-  // Parse suppressed emails from XML
-  const suppressedEmails = [];
-  const emailMatches = responseText.matchAll(/<EmailAddress>(.*?)<\/EmailAddress>/g);
-  
-  for (const match of emailMatches) {
-    suppressedEmails.push(match[1]);
-  }
+  const suppressedEmails = (result.SuppressedDestinationSummaries || []).map((item: any) => ({
+    email: item.EmailAddress,
+    reason: item.Reason,
+    lastUpdateTime: item.LastUpdateTime
+  }));
   
   return {
-    suppressedEmails,
+    suppressedEmails: suppressedEmails.map((item: any) => item.email),
+    suppressedDetails: suppressedEmails,
     reason: validated.reason || 'ALL',
     count: suppressedEmails.length,
-    provider: 'aws-ses',
+    nextToken: result.NextToken,
+    provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()
   };

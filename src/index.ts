@@ -612,12 +612,12 @@ async function sendBulkEmail(args: unknown, env: Env): Promise<unknown> {
       
       params.append('Destination.ToAddresses.member.1', recipient.email);
       
-      const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+      const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`;
       const body = params.toString();
       
       const headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-        'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+        'Host': `email.${env.AWS_REGION}.amazonaws.com`
       };
       
       const signedHeaders = await signAwsRequest('POST', url, headers, body, env);

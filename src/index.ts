@@ -671,12 +671,12 @@ async function getTemplates(env: Env): Promise<unknown> {
     'Version': '2010-12-01'
   });
   
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
   const body = params.toString();
   
   const headers = {
     'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
   const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
@@ -806,12 +806,12 @@ async function verifyEmailIdentity(args: unknown, env: Env): Promise<unknown> {
     'Version': '2010-12-01'
   });
   
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
   const body = params.toString();
   
   const headers = {
     'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
   const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
@@ -847,12 +847,12 @@ async function listVerifiedIdentities(env: Env): Promise<unknown> {
     'Version': '2010-12-01'
   });
   
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
   const body = params.toString();
   
   const headers = {
     'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
   const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
@@ -923,12 +923,12 @@ async function deleteIdentity(args: unknown, env: Env): Promise<unknown> {
     'Version': '2010-12-01'
   });
   
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
   const body = params.toString();
   
   const headers = {
     'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
   const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
@@ -969,12 +969,12 @@ async function getSuppressionList(args: unknown, env: Env): Promise<unknown> {
     params.append('Reasons.member.1', validated.reason);
   }
   
-  const url = `https://ses.${env.AWS_REGION}.amazonaws.com/`;
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
   const body = params.toString();
   
   const headers = {
     'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-    'Host': `ses.${env.AWS_REGION}.amazonaws.com`
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
   };
   
   const signedHeaders = await signAwsRequest('POST', url, headers, body, env);

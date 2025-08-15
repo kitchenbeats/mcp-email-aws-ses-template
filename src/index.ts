@@ -214,6 +214,143 @@ const TOOLS = [
         }
       }
     }
+  },
+  {
+    name: 'create_template',
+    description: 'Create a new AWS SES email template',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        templateName: {
+          type: 'string',
+          description: 'Unique name for the template'
+        },
+        subject: {
+          type: 'string',
+          description: 'Subject line template (can include {{variables}})'
+        },
+        htmlBody: {
+          type: 'string',
+          description: 'HTML version of the email body (can include {{variables}})'
+        },
+        textBody: {
+          type: 'string',
+          description: 'Text version of the email body (can include {{variables}})'
+        }
+      },
+      required: ['templateName', 'subject']
+    }
+  },
+  {
+    name: 'update_template',
+    description: 'Update an existing AWS SES email template',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        templateName: {
+          type: 'string',
+          description: 'Name of the template to update'
+        },
+        subject: {
+          type: 'string',
+          description: 'Subject line template (can include {{variables}})'
+        },
+        htmlBody: {
+          type: 'string',
+          description: 'HTML version of the email body (can include {{variables}})'
+        },
+        textBody: {
+          type: 'string',
+          description: 'Text version of the email body (can include {{variables}})'
+        }
+      },
+      required: ['templateName']
+    }
+  },
+  {
+    name: 'delete_template',
+    description: 'Delete an AWS SES email template',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        templateName: {
+          type: 'string',
+          description: 'Name of the template to delete'
+        }
+      },
+      required: ['templateName']
+    }
+  },
+  {
+    name: 'get_template',
+    description: 'Get details of a specific AWS SES email template',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        templateName: {
+          type: 'string',
+          description: 'Name of the template to retrieve'
+        }
+      },
+      required: ['templateName']
+    }
+  },
+  {
+    name: 'add_to_suppression_list',
+    description: 'Add email addresses to the suppression list',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        emails: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Email addresses to suppress'
+        },
+        reason: {
+          type: 'string',
+          enum: ['BOUNCE', 'COMPLAINT'],
+          description: 'Reason for suppression'
+        }
+      },
+      required: ['emails', 'reason']
+    }
+  },
+  {
+    name: 'remove_from_suppression_list',
+    description: 'Remove email addresses from the suppression list',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        emails: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Email addresses to remove from suppression'
+        }
+      },
+      required: ['emails']
+    }
+  },
+  {
+    name: 'get_account_send_enabled',
+    description: 'Check if sending is enabled for the AWS SES account',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'put_account_send_enabled',
+    description: 'Enable or disable sending for the AWS SES account',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled: {
+          type: 'boolean',
+          description: 'Whether to enable or disable sending'
+        }
+      },
+      required: ['enabled']
+    }
   }
 ];
 
@@ -382,6 +519,38 @@ async function handleToolCall(request: JsonRpcRequest, env: Env): Promise<JsonRp
         result = await getSuppressionList(params.arguments, env);
         break;
       
+      case 'create_template':
+        result = await createTemplate(params.arguments, env);
+        break;
+      
+      case 'update_template':
+        result = await updateTemplate(params.arguments, env);
+        break;
+      
+      case 'delete_template':
+        result = await deleteTemplate(params.arguments, env);
+        break;
+      
+      case 'get_template':
+        result = await getTemplate(params.arguments, env);
+        break;
+      
+      case 'add_to_suppression_list':
+        result = await addToSuppressionList(params.arguments, env);
+        break;
+      
+      case 'remove_from_suppression_list':
+        result = await removeFromSuppressionList(params.arguments, env);
+        break;
+      
+      case 'get_account_send_enabled':
+        result = await getAccountSendEnabled(env);
+        break;
+      
+      case 'put_account_send_enabled':
+        result = await putAccountSendEnabled(params.arguments, env);
+        break;
+      
       default:
         return {
           jsonrpc: '2.0',
@@ -502,7 +671,7 @@ async function hmacSha256(key: ArrayBuffer, data: string): Promise<string> {
 
 async function getSignatureKey(key: string, date: string, region: string, service: string): Promise<ArrayBuffer> {
   const encoder = new TextEncoder();
-  const kDate = await hmacSha256Raw(encoder.encode(`AWS4${key}`), date);
+  const kDate = await hmacSha256Raw(encoder.encode(`AWS4${key}`).buffer, date);
   const kRegion = await hmacSha256Raw(kDate, region);
   const kService = await hmacSha256Raw(kRegion, service);
   return await hmacSha256Raw(kService, 'aws4_request');
@@ -575,7 +744,7 @@ async function sendEmail(args: unknown, env: Env): Promise<unknown> {
   }
   
   // V2 API returns JSON
-  const result = await response.json();
+  const result: any = await response.json();
   
   return {
     success: true,
@@ -631,7 +800,7 @@ async function sendBulkEmail(args: unknown, env: Env): Promise<unknown> {
       });
       
       if (response.ok) {
-        const result = await response.json();
+        const result: any = await response.json();
         results.push({
           email: recipient.email,
           success: true,
@@ -687,7 +856,7 @@ async function getTemplates(env: Env): Promise<unknown> {
   }
   
   // V2 API returns JSON
-  const result = await response.json();
+  const result: any = await response.json();
   
   const templates = (result.TemplatesMetadata || []).map((template: any) => ({
     name: template.TemplateName,
@@ -704,20 +873,67 @@ async function getTemplates(env: Env): Promise<unknown> {
   };
 }
 
-// Get email delivery status
+// Get email delivery status using V2 API
 async function getEmailStatus(args: unknown, env: Env): Promise<unknown> {
   const validated = getEmailStatusSchema.parse(args);
   
-  // AWS SES doesn't provide direct message status lookup
-  // This would require SNS topic configuration for delivery notifications
-  return {
-    messageId: validated.messageId,
-    status: 'sent',
-    provider: 'aws-ses',
-    region: env.AWS_REGION,
-    timestamp: new Date().toISOString(),
-    note: 'Real-time status requires SNS topic configuration for delivery notifications'
-  };
+  // AWS SES V2 doesn't provide direct message status lookup by message ID alone
+  // For production use, you would need to:
+  // 1. Configure SNS topics for bounce/complaint notifications
+  // 2. Use CloudWatch Events for delivery tracking
+  // 3. Store message tracking data in your own database
+  
+  // However, we can check account-level sending statistics
+  try {
+    // Get recent sending statistics to provide context
+    const statsUrl = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      'Host': `email.${env.AWS_REGION}.amazonaws.com`
+    };
+    
+    const signedHeaders = await signAwsRequest('GET', statsUrl, headers, '', env);
+    
+    const response = await fetch(statsUrl, {
+      method: 'GET',
+      headers: signedHeaders
+    });
+    
+    let accountStats: any = {};
+    if (response.ok) {
+      accountStats = await response.json();
+    }
+    
+    return {
+      messageId: validated.messageId,
+      status: 'unknown',
+      provider: 'aws-ses-v2',
+      region: env.AWS_REGION,
+      timestamp: new Date().toISOString(),
+      accountStats: {
+        sendingEnabled: (accountStats as any)?.SendingEnabled || false,
+        enforcementStatus: (accountStats as any)?.EnforcementStatus || 'unknown'
+      },
+      recommendations: [
+        'Configure SNS topics for bounce and complaint notifications',
+        'Use CloudWatch Events for delivery status tracking',
+        'Implement your own message tracking database',
+        'Consider using SES Configuration Sets for detailed tracking'
+      ],
+      note: 'AWS SES V2 API does not provide direct message status lookup. Message was submitted to SES but delivery status requires additional configuration.'
+    };
+  } catch (error) {
+    return {
+      messageId: validated.messageId,
+      status: 'unknown',
+      provider: 'aws-ses-v2',
+      region: env.AWS_REGION,
+      timestamp: new Date().toISOString(),
+      error: error instanceof Error ? error.message : 'Unknown error',
+      note: 'Unable to retrieve message status. AWS SES V2 API does not provide direct message status lookup.'
+    };
+  }
 }
 
 // Get sending quota using V2 API
@@ -743,7 +959,7 @@ async function getSendingQuota(env: Env): Promise<unknown> {
   }
   
   // V2 API returns JSON
-  const result = await response.json();
+  const result: any = await response.json();
   
   return {
     max24HourSend: result.SendQuota?.Max24HourSend || 0,
@@ -781,7 +997,7 @@ async function getSendStatistics(env: Env): Promise<unknown> {
   }
   
   // V2 API returns JSON with different structure
-  const result = await response.json();
+  const result: any = await response.json();
   
   // Return simplified statistics from account data
   return {
@@ -841,7 +1057,7 @@ async function verifyEmailIdentity(args: unknown, env: Env): Promise<unknown> {
   }
   
   // V2 API returns JSON
-  const result = await response.json();
+  const result: any = await response.json();
   
   return {
     success: true,
@@ -878,7 +1094,7 @@ async function listVerifiedIdentities(env: Env): Promise<unknown> {
   }
   
   // V2 API returns JSON
-  const result = await response.json();
+  const result: any = await response.json();
   
   // Separate emails and domains
   const emails: string[] = [];
@@ -986,7 +1202,7 @@ async function getSuppressionList(args: unknown, env: Env): Promise<unknown> {
   }
   
   // V2 API returns JSON
-  const result = await response.json();
+  const result: any = await response.json();
   
   const suppressedEmails = (result.SuppressedDestinationSummaries || []).map((item: any) => ({
     email: item.EmailAddress,
@@ -1000,6 +1216,412 @@ async function getSuppressionList(args: unknown, env: Env): Promise<unknown> {
     reason: validated.reason || 'ALL',
     count: suppressedEmails.length,
     nextToken: result.NextToken,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Create email template using V2 API
+async function createTemplate(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    templateName: z.string(),
+    subject: z.string(),
+    htmlBody: z.string().optional(),
+    textBody: z.string().optional()
+  }).parse(args);
+
+  // V2 API endpoint for creating email template
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/templates`;
+  
+  // V2 API uses JSON
+  const body = JSON.stringify({
+    TemplateName: validated.templateName,
+    TemplateContent: {
+      Subject: validated.subject,
+      Html: validated.htmlBody || undefined,
+      Text: validated.textBody || undefined
+    }
+  });
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('POST', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    // Handle conflict if template already exists
+    if (response.status === 409) {
+      throw new Error(`Template '${validated.templateName}' already exists`);
+    }
+    throw new Error(`AWS SES V2 create template error (${response.status}): ${error}`);
+  }
+  
+  return {
+    success: true,
+    templateName: validated.templateName,
+    message: `Template '${validated.templateName}' created successfully`,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Update email template using V2 API
+async function updateTemplate(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    templateName: z.string(),
+    subject: z.string().optional(),
+    htmlBody: z.string().optional(),
+    textBody: z.string().optional()
+  }).parse(args);
+
+  // V2 API endpoint for updating email template
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/templates/${encodeURIComponent(validated.templateName)}`;
+  
+  // V2 API uses JSON
+  const body = JSON.stringify({
+    TemplateContent: {
+      Subject: validated.subject || undefined,
+      Html: validated.htmlBody || undefined,
+      Text: validated.textBody || undefined
+    }
+  });
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('PUT', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    // Handle not found
+    if (response.status === 404) {
+      throw new Error(`Template '${validated.templateName}' not found`);
+    }
+    throw new Error(`AWS SES V2 update template error (${response.status}): ${error}`);
+  }
+  
+  return {
+    success: true,
+    templateName: validated.templateName,
+    message: `Template '${validated.templateName}' updated successfully`,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Delete email template using V2 API
+async function deleteTemplate(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    templateName: z.string()
+  }).parse(args);
+
+  // V2 API endpoint for deleting email template
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/templates/${encodeURIComponent(validated.templateName)}`;
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('DELETE', url, headers, '', env);
+  
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: signedHeaders
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    // Handle not found
+    if (response.status === 404) {
+      return {
+        success: true,
+        templateName: validated.templateName,
+        message: `Template '${validated.templateName}' not found or already deleted`,
+        provider: 'aws-ses-v2',
+        region: env.AWS_REGION,
+        timestamp: new Date().toISOString()
+      };
+    }
+    throw new Error(`AWS SES V2 delete template error (${response.status}): ${error}`);
+  }
+  
+  return {
+    success: true,
+    templateName: validated.templateName,
+    message: `Template '${validated.templateName}' deleted successfully`,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Get email template details using V2 API
+async function getTemplate(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    templateName: z.string()
+  }).parse(args);
+
+  // V2 API endpoint for getting email template
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/templates/${encodeURIComponent(validated.templateName)}`;
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('GET', url, headers, '', env);
+  
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: signedHeaders
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    // Handle not found
+    if (response.status === 404) {
+      throw new Error(`Template '${validated.templateName}' not found`);
+    }
+    throw new Error(`AWS SES V2 get template error (${response.status}): ${error}`);
+  }
+  
+  // V2 API returns JSON
+  const result: any = await response.json();
+  
+  return {
+    templateName: result.TemplateName,
+    subject: result.TemplateContent?.Subject,
+    htmlBody: result.TemplateContent?.Html,
+    textBody: result.TemplateContent?.Text,
+    createdTimestamp: result.CreatedTimestamp,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Add emails to suppression list using V2 API
+async function addToSuppressionList(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    emails: z.array(z.string().email()),
+    reason: z.enum(['BOUNCE', 'COMPLAINT'])
+  }).parse(args);
+
+  const results = [];
+  
+  // V2 API requires individual requests for each email
+  for (const email of validated.emails) {
+    try {
+      // V2 API endpoint for adding to suppression list
+      const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/suppression/addresses`;
+      
+      // V2 API uses JSON
+      const body = JSON.stringify({
+        EmailAddress: email,
+        Reason: validated.reason
+      });
+      
+      const headers = {
+        'Content-Type': 'application/json',
+        'Host': `email.${env.AWS_REGION}.amazonaws.com`
+      };
+      
+      const signedHeaders = await signAwsRequest('PUT', url, headers, body, env);
+      
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: signedHeaders,
+        body
+      });
+      
+      if (response.ok) {
+        results.push({
+          email,
+          success: true,
+          reason: validated.reason
+        });
+      } else {
+        const error = await response.text();
+        results.push({
+          email,
+          success: false,
+          error: `Error (${response.status}): ${error}`
+        });
+      }
+    } catch (error) {
+      results.push({
+        email,
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+  
+  return {
+    success: true,
+    results,
+    reason: validated.reason,
+    totalEmails: validated.emails.length,
+    successCount: results.filter(r => r.success).length,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Remove emails from suppression list using V2 API
+async function removeFromSuppressionList(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    emails: z.array(z.string().email())
+  }).parse(args);
+
+  const results = [];
+  
+  // V2 API requires individual requests for each email
+  for (const email of validated.emails) {
+    try {
+      // V2 API endpoint for removing from suppression list
+      const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/suppression/addresses/${encodeURIComponent(email)}`;
+      
+      const headers = {
+        'Content-Type': 'application/json',
+        'Host': `email.${env.AWS_REGION}.amazonaws.com`
+      };
+      
+      const signedHeaders = await signAwsRequest('DELETE', url, headers, '', env);
+      
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: signedHeaders
+      });
+      
+      if (response.ok || response.status === 404) {
+        // 404 means email wasn't in suppression list, which is fine
+        results.push({
+          email,
+          success: true,
+          message: response.status === 404 ? 'Email not in suppression list' : 'Removed from suppression list'
+        });
+      } else {
+        const error = await response.text();
+        results.push({
+          email,
+          success: false,
+          error: `Error (${response.status}): ${error}`
+        });
+      }
+    } catch (error) {
+      results.push({
+        email,
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+  
+  return {
+    success: true,
+    results,
+    totalEmails: validated.emails.length,
+    successCount: results.filter(r => r.success).length,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Get account send enabled status using V2 API
+async function getAccountSendEnabled(env: Env): Promise<unknown> {
+  // V2 API endpoint for account details
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account`;
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('GET', url, headers, '', env);
+  
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: signedHeaders
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`AWS SES V2 account details error (${response.status}): ${error}`);
+  }
+  
+  // V2 API returns JSON
+  const result: any = await response.json();
+  
+  return {
+    sendingEnabled: result.SendingEnabled || false,
+    enforcementStatus: result.EnforcementStatus,
+    productionAccess: result.ProductionAccessEnabled || false,
+    provider: 'aws-ses-v2',
+    region: env.AWS_REGION,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// Enable/disable account sending using V2 API
+async function putAccountSendEnabled(args: unknown, env: Env): Promise<unknown> {
+  const validated = z.object({
+    enabled: z.boolean()
+  }).parse(args);
+
+  // V2 API endpoint for updating account sending
+  const url = `https://email.${env.AWS_REGION}.amazonaws.com/v2/email/account/sending-enabled`;
+  
+  // V2 API uses JSON
+  const body = JSON.stringify({
+    Enabled: validated.enabled
+  });
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Host': `email.${env.AWS_REGION}.amazonaws.com`
+  };
+  
+  const signedHeaders = await signAwsRequest('PUT', url, headers, body, env);
+  
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: signedHeaders,
+    body
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`AWS SES V2 set send enabled error (${response.status}): ${error}`);
+  }
+  
+  return {
+    success: true,
+    sendingEnabled: validated.enabled,
+    message: `Account sending ${validated.enabled ? 'enabled' : 'disabled'} successfully`,
     provider: 'aws-ses-v2',
     region: env.AWS_REGION,
     timestamp: new Date().toISOString()

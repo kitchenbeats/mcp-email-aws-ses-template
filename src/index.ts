@@ -599,6 +599,9 @@ async function signAwsRequest(
   const timestamp = new Date().toISOString().replace(/[:\-]|\.\d{3}/g, '');
   const date = timestamp.substring(0, 8);
   
+  // Determine the service from the URL (ses for v1, email for v2)
+  const service = host.startsWith('email.') ? 'email' : 'ses';
+  
   // Create canonical request
   const canonicalHeaders = Object.keys(headers)
     .sort()
@@ -623,7 +626,7 @@ async function signAwsRequest(
   ].join('\n');
   
   // Create string to sign
-  const credentialScope = `${date}/${env.AWS_REGION}/ses/aws4_request`;
+  const credentialScope = `${date}/${env.AWS_REGION}/${service}/aws4_request`;
   const stringToSign = [
     'AWS4-HMAC-SHA256',
     timestamp,
@@ -632,7 +635,7 @@ async function signAwsRequest(
   ].join('\n');
   
   // Calculate signature
-  const signingKey = await getSignatureKey(env.AWS_SECRET_ACCESS_KEY, date, env.AWS_REGION, 'ses');
+  const signingKey = await getSignatureKey(env.AWS_SECRET_ACCESS_KEY, date, env.AWS_REGION, service);
   const signature = await hmacSha256(signingKey, stringToSign);
   
   // Create authorization header
